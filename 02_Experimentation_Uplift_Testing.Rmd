@@ -1,0 +1,316 @@
+---
+title: "Quantium Virtual Internship - Task 2: Experimentation and Uplift Testing"
+author: "Phuoc Cao"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+# Set global chunk options for PDF
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  warning = FALSE, 
+  message = FALSE, 
+  fig.width = 8,     
+  fig.height = 5, 
+  fig.align = "center",
+  out.width = "95%"
+)
+```
+
+# Introduction:
+This report evaluates the performance of the new trial store layouts implemented in stores 77, 86, and 88. By matching each trial store to a statistically similar control store based on historical data, we will assess if the trial period (Feb 2019 - April 2019) generated a significant uplift in total sales and customer footfall.
+
+# Data Preparation:
+```{r libraries}
+# Load required libraries
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(knitr)
+
+# Set global theme for professional charts
+theme_set(theme_minimal() +
+  theme(
+    text = element_text(family = "sans", color = "#333333"),
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  ))
+```
+
+```{r load_data}
+# --- STEP 1: LOAD AND CLEAN TRANSACTION DATA ---
+
+file_data <- "QVI_data.csv"
+
+# Strict check: Stop and print error if file is missing
+if (!file.exists(file_data)) {
+  stop(paste("ERROR: Cannot find file", file_data, 
+             ". R is currently looking in this directory:", getwd()))
+}
+
+data <- read_csv(file_data, show_col_types = FALSE)
+
+# --- STEP 2: METRIC CALCULATION ---
+# Calculate monthly metrics: total sales, customers, transactions per customer, etc.
+measureOverTime <- data |>
+  mutate(YEARMONTH = as.integer(format(DATE, "%Y%m"))) |>
+  group_by(STORE_NBR, YEARMONTH) |>
+  summarise(
+    totSales = sum(TOT_SALES),
+    nCustomers = n_distinct(LYLTY_CARD_NBR),
+    nTxnPerCust = n_distinct(TXN_ID) / n_distinct(LYLTY_CARD_NBR),
+    nChipsPerTxn = sum(PROD_QTY) / n_distinct(TXN_ID),
+    avgPricePerUnit = sum(TOT_SALES) / sum(PROD_QTY),
+    .groups = "drop"
+  )
+
+# Filter stores with full 12 months observation period
+storesWithFullObs <- measureOverTime |>
+  group_by(STORE_NBR) |>
+  count() |>
+  filter(n == 12) |>
+  pull(STORE_NBR)
+
+measureOverTime <- measureOverTime |>
+  filter(STORE_NBR %in% storesWithFullObs)
+
+# Separate Pre-Trial data (Before Feb 2019)
+preTrialMeasures <- measureOverTime |>
+  filter(YEARMONTH < 201902)
+```
+
+# Analytical Functions Setup
+Instead of repeating code for each store, we build dynamic, scalable functions to evaluate correlations, magnitude distances, and plot results automatically.
+
+```{r functions}
+# Function 1: Find the Best Control Store
+find_control_store <- function(preTrialMeasures, trial_store) {
+  
+  # Helper to compute correlation
+  calc_corr <- function(metric_col) {
+    trial_data <- preTrialMeasures |> filter(STORE_NBR == trial_store) |> select(YEARMONTH, trial_metric = {{metric_col}})
+    preTrialMeasures |>
+      filter(STORE_NBR != trial_store) |>
+      left_join(trial_data, by = "YEARMONTH") |>
+      group_by(STORE_NBR) |>
+      summarise(corr_measure = cor({{metric_col}}, trial_metric, use = "complete.obs"), .groups = "drop")
+  }
+  
+  # Helper to compute magnitude score
+  calc_mag <- function(metric_col) {
+    trial_data <- preTrialMeasures |> filter(STORE_NBR == trial_store) |> select(YEARMONTH, trial_metric = {{metric_col}})
+    dist_table <- preTrialMeasures |>
+      filter(STORE_NBR != trial_store) |>
+      left_join(trial_data, by = "YEARMONTH") |>
+      mutate(measure = abs({{metric_col}} - trial_metric)) |>
+      group_by(YEARMONTH) |>
+      mutate(minDist = min(measure, na.rm=TRUE), maxDist = max(measure, na.rm=TRUE)) |>
+      ungroup() |>
+      mutate(magMeasure = 1 - (measure - minDist) / (maxDist - minDist)) |>
+      group_by(STORE_NBR) |>
+      summarise(mag_measure = mean(magMeasure, na.rm=TRUE), .groups = "drop")
+    return(dist_table)
+  }
+  
+  # Compute combined scores for Sales and Customers
+  corr_sales <- calc_corr(totSales)
+  mag_sales <- calc_mag(totSales)
+  score_sales <- corr_sales |> left_join(mag_sales, by = "STORE_NBR") |>
+    mutate(scoreNSales = 0.5 * corr_measure + 0.5 * mag_measure)
+  
+  corr_cust <- calc_corr(nCustomers)
+  mag_cust <- calc_mag(nCustomers)
+  score_cust <- corr_cust |> left_join(mag_cust, by = "STORE_NBR") |>
+    mutate(scoreNCust = 0.5 * corr_measure + 0.5 * mag_measure)
+  
+  # Final Combined Score
+  final_scores <- score_sales |>
+    left_join(score_cust, by = "STORE_NBR") |>
+    mutate(finalControlScore = 0.5 * scoreNSales + 0.5 * scoreNCust) |>
+    arrange(desc(finalControlScore))
+  
+  return(final_scores$STORE_NBR[1])
+}
+
+# Function 2: Plot Pre-Trial Trends
+plot_pretrial_trend <- function(measureOverTime, trial_store, control_store, metric_col, metric_name) {
+  
+  trial_control <- measureOverTime |>
+    filter(STORE_NBR %in% c(trial_store, control_store)) |>
+    mutate(Store_Type = ifelse(STORE_NBR == trial_store, "Trial Store", "Control Store"),
+           TransactionMonth = as.Date(paste0(YEARMONTH, "01"), "%Y%m%d")) |>
+    select(TransactionMonth, Store_Type, Metric = {{metric_col}})
+  
+  other_stores <- measureOverTime |>
+    filter(!(STORE_NBR %in% c(trial_store, control_store))) |>
+    group_by(YEARMONTH) |>
+    summarise(Metric = mean({{metric_col}}, na.rm=TRUE), .groups = "drop") |>
+    mutate(Store_Type = "Other Stores",
+           TransactionMonth = as.Date(paste0(YEARMONTH, "01"), "%Y%m%d")) |>
+    select(TransactionMonth, Store_Type, Metric)
+  
+  plot_data <- bind_rows(trial_control, other_stores)
+  plot_data$Store_Type <- factor(plot_data$Store_Type, levels = c("Trial Store", "Control Store", "Other Stores"))
+  
+  ggplot(plot_data, aes(x = TransactionMonth, y = Metric, color = Store_Type)) +
+    geom_line(linewidth = 1) +
+    scale_color_manual(values = c("Trial Store" = "#E74C3C", "Control Store" = "#2980B9", "Other Stores" = "#BDC3C7")) +
+    scale_y_continuous(labels = comma) +
+    labs(title = paste("Pre-Trial Trend:", metric_name),
+         subtitle = paste("Trial Store", trial_store, "vs Control Store", control_store),
+         x = "Month", y = metric_name, color = NULL)
+}
+
+# Function 3: Evaluate Trial Significance & Plot 95% Confidence Interval
+assess_trial <- function(measureOverTime, trial_store, control_store, metric_col, metric_name) {
+  
+  trial_data <- measureOverTime |> filter(STORE_NBR == trial_store) |> select(YEARMONTH, trial_metric = {{metric_col}})
+  control_data <- measureOverTime |> filter(STORE_NBR == control_store) |> select(YEARMONTH, control_metric = {{metric_col}})
+  
+  # Scaling factor computation based on pre-trial sums
+  pre_trial_trial <- trial_data |> filter(YEARMONTH < 201902) |> pull(trial_metric) |> sum()
+  pre_trial_control <- control_data |> filter(YEARMONTH < 201902) |> pull(control_metric) |> sum()
+  scaling_factor <- pre_trial_trial / pre_trial_control
+  
+  scaled_control <- control_data |> mutate(scaled_control = control_metric * scaling_factor)
+  
+  # Percentage difference and Standard Deviation
+  diff_table <- trial_data |>
+    left_join(scaled_control, by = "YEARMONTH") |>
+    mutate(percentageDiff = abs(trial_metric - scaled_control) / scaled_control)
+  
+  std_dev <- sd(diff_table |> filter(YEARMONTH < 201902) |> pull(percentageDiff))
+  
+  # Calculate T-Values for table
+  t_values_table <- diff_table |>
+    filter(YEARMONTH >= 201902 & YEARMONTH <= 201904) |>
+    mutate(
+      tValue = percentageDiff / std_dev,
+      Critical_95th = qt(0.95, df = 7),
+      Significant = ifelse(tValue > Critical_95th, "Yes", "No")
+    ) |>
+    select(YEARMONTH, tValue, Critical_95th, Significant)
+  
+  cat(paste("\n### T-Value Statistics for", metric_name, "\n"))
+  print(kable(t_values_table, digits = 3))
+  
+  # Plot Data Prep
+  plot_data <- diff_table |>
+    mutate(
+      TransactionMonth = as.Date(paste0(YEARMONTH, "01"), "%Y%m%d"),
+      `Trial Store` = trial_metric,
+      `Control Store (Scaled)` = scaled_control,
+      `Control 95th % CI` = scaled_control * (1 + std_dev * 2),
+      `Control 5th % CI` = scaled_control * (1 - std_dev * 2)
+    ) |>
+    select(TransactionMonth, `Trial Store`, `Control Store (Scaled)`, `Control 95th % CI`, `Control 5th % CI`) |>
+    pivot_longer(cols = -TransactionMonth, names_to = "Store_Type", values_to = "Metric")
+  
+  plot_data$Store_Type <- factor(plot_data$Store_Type, levels = c("Trial Store", "Control Store (Scaled)", "Control 95th % CI", "Control 5th % CI"))
+  
+  colors <- c("Trial Store" = "#E74C3C", "Control Store (Scaled)" = "#2980B9", 
+              "Control 95th % CI" = "#7F8C8D", "Control 5th % CI" = "#7F8C8D")
+  linetypes <- c("Trial Store" = "solid", "Control Store (Scaled)" = "solid", 
+                 "Control 95th % CI" = "dashed", "Control 5th % CI" = "dashed")
+  
+  p <- ggplot(plot_data, aes(x = TransactionMonth, y = Metric, color = Store_Type, linetype = Store_Type)) +
+    annotate("rect", xmin = as.Date("2019-02-01"), xmax = as.Date("2019-04-01"), 
+             ymin = -Inf, ymax = Inf, alpha = 0.2, fill = "gold") +
+    geom_line(linewidth = 1) +
+    scale_color_manual(values = colors) +
+    scale_linetype_manual(values = linetypes) +
+    scale_y_continuous(labels = comma) +
+    labs(title = paste("Trial Assessment:", metric_name),
+         subtitle = paste("Trial Store", trial_store, "vs Control", control_store, "(Yellow = Trial Period)"),
+         x = "Month", y = metric_name, color = NULL, linetype = NULL)
+  
+  return(p)
+}
+```
+
+# Trial Evaluation: Store 77
+
+## Selecting Control Store
+
+We use our custom matching function to find the control store closest to Trial Store 77 in both correlation and magnitude distances.
+
+```{r trial77}
+trial_77 <- 77
+control_77 <- find_control_store(preTrialMeasures, trial_77)
+cat(paste("Selected Control Store for Trial Store 77 is:", control_77))
+```
+
+Let's visually verify that Store 77 and Store 233 were highly correlated in the pre-trial period.
+
+```{r correlated 77 vs 233}
+plot_pretrial_trend(measureOverTime, trial_77, control_77, totSales, "Total Sales ($)")
+plot_pretrial_trend(measureOverTime, trial_77, control_77, nCustomers, "Total Customers")
+```
+
+## Trial Assessment
+Now we compare the performance during the trial period (Feb - April 2019).
+
+```{r compare Feb-April 2019}
+assess_trial(measureOverTime, trial_77, control_77, totSales, "Total Sales ($)")
+assess_trial(measureOverTime, trial_77, control_77, nCustomers, "Total Customers")
+```
+
+**Insight:** Trial Store 77 showed a highly significant uplift in both Sales and Customers, especially in March and April where it broke the 95th percentile confidence interval bounds.
+
+# Trial Evaluation: Store 66
+
+## Selecting Control Store:
+
+```{r trial86}
+trial_86 <- 86
+control_86 <- find_control_store(preTrialMeasures, trial_86)
+cat(paste("Selected Control Store for Trial Store 86 is:", control_86))
+
+plot_pretrial_trend(measureOverTime, trial_86, control_86, totSales, "Total Sales ($)")
+plot_pretrial_trend(measureOverTime, trial_86, control_86, nCustomers, "Total Customers")
+```
+
+## Trial Assessment
+
+```{r assessment86}
+assess_trial(measureOverTime, trial_86, control_86, totSales, "Total Sales ($)")
+assess_trial(measureOverTime, trial_86, control_86, nCustomers, "Total Customers")
+```
+
+**Insights:** Store 86 successfully drove an influx of Customers (highly significant in all three months). However, Total Sales only saw a marginal significant increase in March. This suggests the new layout attracted traffic but did not necessarily convert to larger basket sizes.
+
+# Trial Evaluation: Store 88
+
+## Selecting Control Store:
+
+```{r trial88}
+trial_88 <- 88
+control_88 <- find_control_store(preTrialMeasures, trial_88)
+cat(paste("Selected Control Store for Trial Store 88 is:", control_88))
+
+plot_pretrial_trend(measureOverTime, trial_88, control_88, totSales, "Total Sales ($)")
+plot_pretrial_trend(measureOverTime, trial_88, control_88, nCustomers, "Total Customers")
+```
+
+## Trial Assessment
+```{r assessment88}
+assess_trial(measureOverTime, trial_88, control_88, totSales, "Total Sales ($)")
+assess_trial(measureOverTime, trial_88, control_88, nCustomers, "Total Customers")
+```
+
+**Insight:** Store 88 performed exceptionally well, showing statistically significant increases in both Total Sales and Customers during the critical trial months (March & April).
+
+# Conclusion and Recommendation
+
+Based on statistical t-tests and visual bounds testing using the 95th percentiles:
+
+1. **Stores 77 & 88** demonstrated a statistically significant uplift in both customer volume and total sales revenue compared to their respective control stores.
+
+2. **Store 86** saw a highly significant increase in customer footfall, though its sales uplift was not as strongly correlated.
+
+**Recommendation:** The trial layouts have proven overall successful at drawing in higher foot traffic and driving revenue. We recommend the Category Manager roll out this new layout to all standard stores, possibly conducting a secondary check on Store 86's merchandising flow to understand why its basket sizes didn't increase alongside foot traffic.

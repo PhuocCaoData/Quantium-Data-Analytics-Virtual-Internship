@@ -1,0 +1,403 @@
+---
+title: "Quantium Virtual Internship - Task 1: Retail Strategy and Analytics"
+author: "Phuoc Cao"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_crop: false
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  warning = FALSE, 
+  message = FALSE, 
+  fig.align = "center"
+)
+```
+
+# Introduction
+This report analyzes the sales performance of the Chips category, identifies target customer profiles, and proposes strategies for the Category Manager based on transaction data and customer behavior.
+
+# Data Preparation
+
+```{r libraries}
+# Load required libraries
+library(tidyverse)
+library(readxl)
+library(scales)
+library(patchwork)
+
+# Set theme
+theme_set(theme_minimal() +
+  theme(
+    text = element_text(family = "sans", color = "#333333"),
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+```{r load_data}
+# --- STEP 1: LOAD AND CLEAN TRANSACTION DATA ---
+
+# Define file name
+file_trans <- "QVI_transaction_data.xlsx"
+
+# Strict check: Stop and print error if file is missing
+if (!file.exists(file_trans)) {
+  stop(paste("ERROR: Cannot find file", file_trans, 
+             ". R is currently looking in this directory:", getwd()))
+}
+
+path_xlsx <- file_trans
+df_trans <- read_excel(path_xlsx)
+
+# Fix Date Format
+df_trans <- df_trans |>
+  mutate(DATE = as.Date(DATE, origin = "1899-12-30")) |>
+  filter(!grepl("salsa", PROD_NAME, ignore.case = TRUE)) |>
+  filter(PROD_QTY < 200)
+
+# --- FEATURE ENGINEERING ---
+
+df_trans <- df_trans |>
+  mutate(
+    PACK_SIZE = parse_number(PROD_NAME),
+    BRAND = word(PROD_NAME, 1)
+  )
+
+# Brand Mapping
+df_trans <- df_trans |>
+  mutate(BRAND = case_match(BRAND,
+    "Red" ~ "Red Rock Deli", "RRD" ~ "Red Rock Deli",
+    "WW" ~ "Woolworths", "NCC" ~ "Natural",
+    "GrnWves" ~ "Grain Waves", "Grain" ~ "Grain Waves",
+    "Infzns" ~ "Infuzions", "Snbts" ~ "Sunbites",
+    "French" ~ "French Fries", "Burger" ~ "Burger Rings",
+    "Smith" ~ "Smiths",
+    .default = BRAND
+  ))
+
+# --- MERGE WITH CUSTOMER DATA ---
+
+file_cust <- "QVI_purchase_behaviour.csv"
+
+if (!file.exists(file_cust)) {
+  stop(paste("ERROR: Cannot find file", file_cust, 
+             ". R is currently looking in this directory:", getwd()))
+}
+
+path_csv <- file_cust
+df_cust <- read_csv(path_csv, show_col_types = FALSE)
+
+df <- df_trans |>
+  left_join(df_cust, by = "LYLTY_CARD_NBR")
+
+# --- KPIs CALCULATION ---
+total_sales <- sum(df$TOT_SALES)
+total_volume <- sum(df$PROD_QTY)
+total_transactions <- n_distinct(df$TXN_ID)
+```
+
+# Detailed Analysis & Insights
+
+## Group 1: Sales Performance Overview
+
+Below are the Key Performance Indicators (KPIs) for the category:
+
+* **Total Sales:** `r dollar(total_sales)`
+* **Total Transactions:** `r comma(total_transactions)` transactions.
+* **Total Volume Sold:** `r comma(total_volume)` packs.
+
+**Time Trends:**
+Sales show an increasing trend towards the end of the year. Notably, there is a clear **peak** on **December 24th, 2018** (right before Christmas).
+
+*Note: There are zero sales on December 25th (due to store closure), which is a key data point visualized in the chart below.*
+
+```{r chart1_trend, fig.width=14, fig.height=6, out.width="100%"}
+# --- CHART 1: SALES TREND OVER TIME ---
+daily_sales <- df |>
+  group_by(DATE) |>
+  summarise(TOT_SALES = sum(TOT_SALES))
+
+peak_row <- daily_sales |> filter(TOT_SALES == max(TOT_SALES))
+peak_date <- peak_row$DATE
+peak_value <- peak_row$TOT_SALES
+
+ggplot(daily_sales, aes(x = DATE, y = TOT_SALES)) +
+  geom_line(color = "#2C3E50", linewidth = 1) +
+  annotate("text", x = peak_date, y = peak_value + 500,
+           label = paste0("Christmas Peak\n", dollar(peak_value)),
+           color = "#E74C3C", fontface = "bold") +
+  scale_y_continuous(labels = dollar) +
+  labs(title = "Total Sales Trend",
+       subtitle = "Significant spike in December before Christmas",
+       x = NULL, y = "Daily Sales ($)")
+```
+Sales volume fluctuates significantly throughout the week, peaking toward the weekend. Sunday ($263,927) and Friday ($261,816) are the highest-grossing days, whereas Tuesday and Thursday experience the lowest shopping activity.
+
+## Group 2: Customer Segmentation ("The Who")
+
+We analyze the customer base to identify the primary revenue drivers.
+
+**"Golden" Segments (Highest Revenue Contributors):**
+
+1.  **Older Families - Budget:** $156,864 (Highest).
+
+2.  **Young Singles/Couples - Mainstream:** $147,582 (2nd Place).
+
+3.  **Retirees - Mainstream:** $145,169 (3rd Place).
+
+**Unique Customers:**
+
+* **Young Singles/Couples - Mainstream:** 7,917 customers (**Largest population**).
+
+* Retirees - Mainstream: 6,358 customers.
+
+* Older Families - Budget: 4,611 customers.
+
+**Key Insights:**
+
+* **Older Families - Budget** generate the highest sales driven by **high volume** (high frequency & quantity per customer).
+
+* **Young Singles/Couples - Mainstream** generate high sales (2nd place) driven by a **large customer base**, even though individual consumption is lower compared to families.
+
+* **Customer Loyalty & Retention:** The data reveals a stark divide in customer engagement. While 29.4% of the base consists of highly loyal customers (making 5 or more transactions annually), a substantial 27.5% are one-time buyers. This indicates a massive, untapped opportunity for targeted retention campaigns to convert transient shoppers into recurring revenue.
+
+```{r chart2_butterfly, fig.width=14, fig.height=6, out.width="100%"}
+# --- DATA PREP FOR GROUP 2 ---
+segment_summary <- df |>
+  group_by(LIFESTAGE, PREMIUM_CUSTOMER) |>
+  summarise(
+    TOT_SALES = sum(TOT_SALES),
+    PROD_QTY = sum(PROD_QTY),
+    CUSTOMER_COUNT = n_distinct(LYLTY_CARD_NBR),
+    .groups = "drop"
+  ) |>
+  mutate(
+    SEGMENT_NAME = paste(LIFESTAGE, "-", PREMIUM_CUSTOMER),
+    AVG_UNITS = PROD_QTY / CUSTOMER_COUNT,
+    AVG_PRICE = TOT_SALES / PROD_QTY,
+    COLOR = ifelse(PREMIUM_CUSTOMER == "Mainstream", "#E74C3C", "#BDC3C7")
+  ) |>
+  arrange(TOT_SALES)
+
+# --- CHART 2: BUTTERFLY CHART ---
+p_left <- ggplot(segment_summary,
+                 aes(x = CUSTOMER_COUNT, y = reorder(SEGMENT_NAME, TOT_SALES))) +
+  geom_col(aes(fill = COLOR), show.legend = FALSE) +
+  scale_fill_identity() +
+  scale_x_reverse(labels = comma) +
+  labs(title = "Customer Count (Traffic)", x = "Unique Customers", y = NULL) +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+p_right <- ggplot(segment_summary,
+                  aes(x = TOT_SALES, y = reorder(SEGMENT_NAME, TOT_SALES))) +
+  geom_col(aes(fill = COLOR), show.legend = FALSE) +
+  scale_fill_identity() +
+  scale_x_continuous(labels = dollar) +
+  labs(title = "Total Sales (Value)", x = "Total Sales ($)", y = NULL)
+
+p_left + p_right + plot_annotation(title = 'Identifying the "Cash Cows"')
+```
+
+## Group 3: Purchasing Behaviour ("The How")
+
+Analyzing the shopping habits of different segments.
+
+**Average Units per Customer:**
+
+* **Older Families - Budget:** Buy significantly more, approx. **9.1 packs/customer** (Buying for the whole family).
+
+* **Young Singles/Couples - Mainstream:** Buy less, approx. **4.6 packs/customer** (Buying for self or couple).
+
+**Average Price per Unit:**
+
+* **Young Singles/Couples - Mainstream:** **$4.07** (Highest willingness to pay).
+
+* Midage Singles/Couples - Mainstream: $3.99.
+
+* Young Singles/Couples - Budget: Only $3.69.
+
+**Insight:** 
+
+* The **Mainstream** group (especially Young/Midage Singles) is willing to pay significantly higher prices (approx. 10-11% more) per pack compared to the Budget group. This indicates a strong preference for **Premium Brands**.
+
+* **Sales Distribution by Price Tier:** Customers prioritize quality and brand experience over strict savings. The **Mid-tier ($3.00 - $4.50)** segment drives the majority of revenue (45.8%), closely followed by the **Premium tier (>$4.50)** at 34.9%. Budget snacks priced under $3.00 contribute a mere 19.1% to the total sales category.
+
+To confirm this obversation is not due to random chance, we performed an indepentdent t-test:
+```{r t_test}
+# --- STATISTICAL SIGNIFICANCE (T-TEST) ---
+# Filter data for Young and Midage Singles/Couples
+ttest_data <- df |>
+  filter(LIFESTAGE %in% c("YOUNG SINGLES/COUPLES", "MIDAGE SINGLES/COUPLES")) |>
+  mutate(
+    PRICE_PER_UNIT = TOT_SALES / PROD_QTY,
+    GROUP = ifelse(PREMIUM_CUSTOMER == "Mainstream", "Mainstream", "Premium/Budget")
+  )
+
+# Perform Independent t-test (Mainstream vs. Premium/Budget)
+t_test_result <- t.test(PRICE_PER_UNIT ~ GROUP, data = ttest_data, alternative = "greater")
+
+t_test_result
+```
+
+* **Statistical Certainty:** The data confirms that the higher spending behavior of the Mainstream segment (Young and Midage Singles/Couples) is not a random occurrence. They genuinely exhibit a significantly higher willingness to pay (averaging $4.04 per unit) compared to the Premium and Budget groups of the same lifestage ($3.71 per unit).
+
+* **Low Price Sensitivity:** Their willingness to pay nearly 10% more per pack indicates that this segment makes purchasing decisions based on personal preference, entertainment, or social needs, rather than being strictly driven by budget constraints or bargain hunting.
+
+* **Margin Optimization:** Since this target group readily accepts higher price points, the business should avoid over-relying on deep discounts for them, as this would unnecessarily erode profit margins. Instead, the strategy should focus on maintaining the pricing of Premium brands (e.g., Kettle, Tyrrells) while enhancing product visibility to stimulate impulse buying.
+
+```{r chart3_scatter, fig.width=16, fig.height=7, out.width="100%"}
+# --- CHART 3: SCATTER PLOT ---
+target_segment <- segment_summary |>
+  filter(LIFESTAGE == "YOUNG SINGLES/COUPLES" & PREMIUM_CUSTOMER == "Mainstream")
+
+cash_cow_segment <- segment_summary |>
+  filter(LIFESTAGE == "OLDER FAMILIES" & PREMIUM_CUSTOMER == "Budget")
+
+ggplot(segment_summary, aes(x = AVG_UNITS, y = AVG_PRICE)) +
+  geom_point(aes(size = TOT_SALES, color = PREMIUM_CUSTOMER), alpha = 0.8) +
+  scale_color_manual(values = c("Mainstream" = "#E74C3C",
+                                "Budget" = "#BDC3C7",
+                                "Premium" = "#95A5A6"),
+                     name = "CUSTOMER SEGMENT") +
+  scale_size(range = c(5, 20), name = "SALES VOLUME") +
+  # Annotations
+  annotate("text",
+           x = target_segment$AVG_UNITS + 0.15,
+           y = target_segment$AVG_PRICE + 0.06,
+           label = "Mainstream Young Singles/Couples\n(High Price, Low Frequency)",
+           color = "#E74C3C", fontface = "bold", size = 3.5) +
+  annotate("text",
+           x = cash_cow_segment$AVG_UNITS - 0.2,
+           y = cash_cow_segment$AVG_PRICE - 0.08,
+           label = "Older Families - Budget\n(High Frequency, Low Price)",
+           color = "#7F8C8D", fontface = "bold", size = 3.5) +
+  labs(title = "Price vs. Volume Strategy",
+       subtitle = "Mainstream Young Singles are willing to pay more per unit",
+       x = "Average Units per Customer (Frequency)",
+       y = "Average Price per Unit ($)")
+```
+
+## Group 4: Product Preferences ("The What")
+
+* **Leading Brand:** **Kettle** is the absolute sales champion, far outperforming competitors like Smiths and Doritos.
+* **Winning Pack Size:** The **175g** pack is the market's best-seller.
+
+**Lifestage vs. Pack Size Correlation:**
+Data shows that both Families and Singles prefer the 175g size. However, the **Young Singles/Couples** group shows a higher affinity for **270g** packs (typically Twisties) or large **330g/380g** packs (Party bags) compared to the market average.
+
+**Brand Affinity of the "Cash Cow" (Older Families - Budget):**
+Although Kettle leads the overall market, the highest-revenue segment exhibits highly specific preferences. They show a remarkably strong affinity for **Red Rock Deli** (purchasing it 23% more than the market average), the private label **Woolworths** (20% higher), and **French Fries** (19% higher).
+
+```{r chart4_packsize}
+# --- CHART 4: PACK SIZE PREFERENCE ---
+top_pack_sizes <- df |>
+  group_by(PACK_SIZE) |>
+  summarise(TOT_SALES = sum(TOT_SALES)) |>
+  arrange(desc(TOT_SALES)) |>
+  head(5) |>
+  mutate(COLOR = ifelse(PACK_SIZE %in% c(175, 150), "#E74C3C", "#BDC3C7"))
+
+ggplot(top_pack_sizes,
+       aes(x = TOT_SALES, y = reorder(factor(PACK_SIZE), TOT_SALES))) +
+  geom_col(aes(fill = COLOR), show.legend = FALSE) +
+  scale_fill_identity() +
+  geom_text(aes(label = dollar(TOT_SALES)), hjust = -0.1,
+            color = "#333333", fontface = "bold") +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(title = "Top 5 Pack Sizes",
+       subtitle = "175g & 150g are the Market Leaders",
+       x = NULL, y = "Pack Size (g)") +
+  theme(axis.text.x = element_blank(), panel.grid = element_blank())
+```
+
+```{r chart5_heatmap, fig.width=14, fig.height=8.5, out.width="100%"}
+# --- CHART 5: HEATMAP ---
+heatmap_data <- df |>
+  mutate(SEGMENT = paste(LIFESTAGE, "-", PREMIUM_CUSTOMER)) |>
+  group_by(SEGMENT, BRAND) |>
+  summarise(TOT_SALES = sum(TOT_SALES), .groups = "drop")
+
+ggplot(heatmap_data, aes(x = BRAND, y = SEGMENT, fill = TOT_SALES)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "#FFEBEE", high = "#B71C1C", labels = dollar, name = "Sales") +
+  labs(title = "Brand Preferences by Customer Segment", x = "Brand", y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Group 5: Deep Dive & Recommendations (Focus: Mainstream Young Singles/Couples)
+
+This section provides a deep dive into the strategic target group for the Category Manager.
+
+**Why select this group?**
+
+* **Largest Population:** 7,917 customers.
+
+* **Highest Willingness to Pay:** $4.07 per pack.
+
+**Affinity Analysis (Distinct Preferences):**
+
+* **Brand:** This group tends to buy **Tyrrells** (23% higher than average), **Twisties**, and **Doritos** more than other groups. This suggests a preference for trendy, premium, or "fun" brands.
+
+* **Pack Size:** They show a strong affinity for **270g** packs and giant **380g** packs (25% higher than average). This suggests they often purchase chips for **social gatherings or parties**.
+
+```{r chart6_affinity, fig.width=14, fig.height=8.5, out.width="100%"}
+# --- CHART 6: DIVERGING AFFINITY ANALYSIS ---
+target_data <- df |>
+  filter(LIFESTAGE == "YOUNG SINGLES/COUPLES", PREMIUM_CUSTOMER == "Mainstream")
+other_data <- df |>
+  filter(!(LIFESTAGE == "YOUNG SINGLES/COUPLES" & PREMIUM_CUSTOMER == "Mainstream"))
+
+target_props <- target_data |>
+  group_by(BRAND) |>
+  summarise(QTY = sum(PROD_QTY)) |>
+  mutate(PROP_TARGET = QTY / sum(QTY))
+
+other_props <- other_data |>
+  group_by(BRAND) |>
+  summarise(QTY = sum(PROD_QTY)) |>
+  mutate(PROP_OTHER = QTY / sum(QTY))
+
+affinity_df <- inner_join(target_props, other_props, by = "BRAND") |>
+  mutate(
+    AFFINITY = PROP_TARGET / PROP_OTHER,
+    DIVERGENCE = AFFINITY - 1,
+    COLOR = ifelse(DIVERGENCE > 0, "#E74C3C", "#95A5A6")
+  ) |>
+  arrange(DIVERGENCE)
+
+ggplot(affinity_df,
+       aes(x = reorder(BRAND, DIVERGENCE), y = DIVERGENCE, fill = COLOR)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_identity() +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_text(aes(label = paste0(sprintf("%.1f", AFFINITY), "x"),
+                hjust = ifelse(DIVERGENCE > 0, -0.2, 1.2)),
+            size = 3.5, fontface = "bold",
+            color = ifelse(affinity_df$DIVERGENCE > 0, "#E74C3C", "#7F8C8D")) +
+  scale_y_continuous(expand = expansion(mult = 0.2)) +
+  labs(title = "Affinity Analysis: Young Singles/Couples (Mainstream)",
+       subtitle = "Red: Brands they prefer more | Grey: Brands they prefer less",
+       x = NULL, y = NULL) +
+  theme(axis.text.x = element_blank(), panel.grid = element_blank())
+```
+
+# Recommendations
+
+Based on the data analysis, we propose the following strategies:
+
+1.  **Placement:** Since the Mainstream Young Singles/Couples group is large but purchase frequency is not as high as families, place **Tyrrells** and **Doritos** in high-visibility areas or near checkout counters to stimulate **Impulse Buying**.
+2.  **Promotion:** Leverage their tendency to buy large packs (Party pack 380g, 270g) to run **bundle promotions** specifically designed for social gatherings and parties.
+3.  **Pricing Strategy:** This segment accepts higher prices ($4.07 per unit). Therefore, deep discounts are not necessary for Premium lines (like Kettle, Tyrrells). Instead, focus on communicating value-add or product novelty.
+4.  **Supply Chain Optimization:** Ensure that shelves, especially for the top-selling 175g and 380g pack sizes, are fully restocked by Thursday evening to capture the impending Friday and Sunday sales peaks.
+5.  **Customer Retention Campaigns:** Implement "bounce-back" vouchers printed on receipts to incentivize the **27.5%** of one-time buyers to return, converting walk-ins into loyal shoppers.
+6.  **Family Value Bundles:** Capitalizing on the specific brand affinities of the 'Older Families - Budget' segment, create promotional family bundles that combine their preferred brands (Red Rock Deli) with high-margin private labels (Woolworths) to maximize volume per basket.
+7. **Shelf-Space Reallocation:** Reduce the display area for budget products (under $3.00), as they generate only **19.1%** of revenue. Allocate prime, eye-level shelf space to Mid-tier and Premium segments to maximize overall profit margins.
