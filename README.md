@@ -16,8 +16,7 @@ This repository contains my solutions for the **Quantium Data Analytics Virtual 
 ## 📊 Project Tasks & Outcomes
 
 ### Task 1: Retail Strategy and Analytics
-**Requirement:**
-![Task 1 Requirement](images/image_ad3eca.png)
+**Requirement:** *Conduct analysis on your client's transaction dataset and identify customer purchasing behaviours to generate insights and provide commercial recommendations.*
 
 **Key Insights:**
 - **'Older Families - Budget'** and **'Young Singles/Couples - Mainstream'** are the top contributors to total sales.
@@ -37,8 +36,7 @@ This repository contains my solutions for the **Quantium Data Analytics Virtual 
 ---
 
 ### Task 2: Experimentation and Uplift Testing (A/B Testing)
-**Requirement:**
-![Task 2 Requirement](images/image_ad3ee5.png)
+**Requirement:** *Extend your analysis from Task 1 to help you identify benchmark stores that allow you to test the impact of the trial store layouts on customer sales.*
 
 **Methodology:**
 - Selected trial stores (77, 86, 88) were matched with statistically similar control stores based on historical sales magnitude and correlation.
@@ -55,8 +53,7 @@ This repository contains my solutions for the **Quantium Data Analytics Virtual 
 ---
 
 ### Task 3: Analytics and Commercial Application
-**Requirement:**
-![Task 3 Requirement](images/image_ad3f22.png)
+**Requirement:** *Use your analytics and insights from Task 1 and 2 to prepare a report for your client, the Category Manager.*
 
 **Overview:**
 - Synthesized the findings from the data analysis (Task 1) and the A/B testing evaluation (Task 2) into a comprehensive, commercially viable presentation.
