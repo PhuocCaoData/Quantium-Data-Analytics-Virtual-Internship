@@ -1,8 +1,6 @@
 # Quantium-Data-Analytics-Virtual-Internship
 Data analytics and commercial strategy project for a retail supermarket.
 
-![Quantium Logo](https://insidesherpa-assets.s3-ap-southeast-2.amazonaws.com/icons/employer/quantium.png)
-
 ## 📌 Project Overview
 This repository contains my solutions for the **Quantium Data Analytics Virtual Internship** program. The project focuses on deriving actionable insights from retail transaction data and evaluating store performance through A/B testing, ultimately culminating in a commercial report.
 
